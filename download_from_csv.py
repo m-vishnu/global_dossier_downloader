@@ -3,9 +3,13 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os.path
 import sys
 import time
 from pathlib import Path
+from dotenv import load_dotenv
+from tqdm import tqdm
+load_dotenv()
 
 from api import GlobalDossierApi, compute_sleep_delay, proxy_from_env
 
@@ -83,7 +87,7 @@ def build_download_jobs(
     dump_raw: bool = False,
     save_raw: str | None = None,
     sleep_between_doclist_seconds: float = 0.5,
-    sleep_jitter_seconds: float = 0.5,
+    sleep_jitter_seconds: float = 0.5, resume=True
 ) -> list[dict[str, str]]:
     """
     For each patent row call get_doc_list and expand into per-document jobs.
@@ -96,13 +100,27 @@ def build_download_jobs(
     raw_responses: dict[str, object] = {}
 
     total_patents = len(patents)
-    for idx, patent in enumerate(patents):
+
+    if resume:
+        if os.path.exists(save_raw):
+            raw_path = Path(f'{save_raw}')
+            raw_responses = json.loads(raw_path.read_text(encoding="utf-8"))
+        else:
+            # TODO Log nothing to resume
+            pass
+
+    for idx, patent in tqdm(enumerate(patents), total=total_patents):
+
         country = patent["country"]
         doc_number = patent["doc_number"]
         kind_code = patent["kind_code"]
         key = f"{country}{doc_number}{kind_code}"
 
-        print(f"  → fetching doc-list  {country} {doc_number} {kind_code} ...", end=" ")
+        if key in raw_responses:
+            print(f"Skipping {key} because it is already downloaded.")
+            continue
+
+        print(f"  → fetching doc-list  {country} {doc_number} {kind_code} ...", end=" ") # TODO replace with logger
         try:
             payload = api.get_doc_list(
                 country=country,
@@ -118,6 +136,11 @@ def build_download_jobs(
             if dump_raw:
                 print()
                 print(json.dumps(payload, indent=2)[:4000])
+
+            if save_raw:
+                raw_path = Path(f'{save_raw}')
+                raw_path.parent.mkdir(parents=True, exist_ok=True)
+                raw_path.write_text(json.dumps(raw_responses, indent=2), encoding="utf-8")
 
             doc_ids = extract_document_ids(payload)
 
@@ -142,11 +165,11 @@ def build_download_jobs(
                 print(f"  sleeping {delay:.2f}s before next doc-list request...")
                 time.sleep(delay)
 
-    if save_raw:
-        raw_path = Path(save_raw)
-        raw_path.parent.mkdir(parents=True, exist_ok=True)
-        raw_path.write_text(json.dumps(raw_responses, indent=2), encoding="utf-8")
-        print(f"Saved raw doc-list responses to {raw_path}")
+    # if save_raw:
+    #     raw_path = Path(save_raw)
+    #     raw_path.parent.mkdir(parents=True, exist_ok=True)
+    #     raw_path.write_text(json.dumps(raw_responses, indent=2), encoding="utf-8")
+    #     print(f"Saved raw doc-list responses to {raw_path}")
 
     return jobs
 
